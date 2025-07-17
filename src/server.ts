@@ -11,6 +11,9 @@ interface WebPlayer {
   color: string;
   bicycle: RacingBicycle;
   isConnected: boolean;
+  lastSeen: number;
+  disconnectedAt?: number;
+  reconnectCount: number;
 }
 
 interface GameRoom {
@@ -19,6 +22,10 @@ interface GameRoom {
   players: Map<string, WebPlayer>;
   isStarted: boolean;
   maxPlayers: number;
+  state: 'waiting' | 'active' | 'finished' | 'empty';
+  createdAt: number;
+  lastActivity: number;
+  endedAt?: number;
 }
 
 class WebGameServer {
@@ -26,6 +33,8 @@ class WebGameServer {
   private server: ReturnType<typeof createServer>;
   private io: Server;
   private rooms: Map<string, GameRoom> = new Map();
+  private ROOM_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+  private RECONNECT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
   constructor() {
     this.app = express();
@@ -39,6 +48,7 @@ class WebGameServer {
 
     this.setupExpress();
     this.setupSocketIO();
+    this.startRoomCleanupTimer();
   }
 
   private setupExpress(): void {
@@ -50,24 +60,32 @@ class WebGameServer {
     });
 
     this.app.get('/api/rooms', (req, res) => {
-      const roomList = Array.from(this.rooms.values()).map(room => ({
-        id: room.id,
-        playerCount: room.players.size,
-        maxPlayers: room.maxPlayers,
-        isStarted: room.isStarted
-      }));
+      const roomList = Array.from(this.rooms.values())
+        .filter(room => room.state !== 'empty')
+        .map(room => ({
+          id: room.id,
+          playerCount: Array.from(room.players.values()).filter(p => p.isConnected).length,
+          maxPlayers: room.maxPlayers,
+          isStarted: room.isStarted,
+          state: room.state,
+          createdAt: room.createdAt
+        }));
       res.json(roomList);
     });
 
     this.app.post('/api/rooms', (req, res) => {
       const roomId = this.generateRoomId();
       const game = new RacingGame();
+      const now = Date.now();
       const room: GameRoom = {
         id: roomId,
         game,
         players: new Map(),
         isStarted: false,
-        maxPlayers: 4
+        maxPlayers: 4,
+        state: 'waiting',
+        createdAt: now,
+        lastActivity: now
       };
       this.rooms.set(roomId, room);
       res.json({ roomId });
@@ -96,13 +114,19 @@ class WebGameServer {
         }
 
         const bicycle = new RacingBicycle(playerName, playerColor, room.game['config']);
+        const now = Date.now();
         const player: WebPlayer = {
           id: socket.id,
           name: playerName,
           color: playerColor,
           bicycle,
-          isConnected: true
+          isConnected: true,
+          lastSeen: now,
+          reconnectCount: 0
         };
+
+        room.lastActivity = now;
+        this.updateRoomState(room);
 
         room.players.set(socket.id, player);
         room.game.addPlayer(playerName, playerColor, false);
@@ -161,24 +185,54 @@ class WebGameServer {
         }
 
         room.isStarted = true;
+        room.state = 'active';
+        room.lastActivity = Date.now();
         this.io.to(roomId).emit('game-started');
         this.startGameLoop(roomId);
       });
 
       socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
-        
-        for (const [roomId, room] of this.rooms) {
-          const player = room.players.get(socket.id);
-          if (player) {
-            player.isConnected = false;
-            socket.to(roomId).emit('player-disconnected', { playerId: socket.id });
-            
-            if (Array.from(room.players.values()).every(p => !p.isConnected)) {
-              this.rooms.delete(roomId);
-            }
-            break;
-          }
+        this.handlePlayerDisconnect(socket.id);
+      });
+
+      socket.on('reconnect-attempt', ({ roomId, playerName }) => {
+        const room = this.rooms.get(roomId);
+        if (!room) {
+          socket.emit('error', { message: 'Room not found' });
+          return;
+        }
+
+        // Find player by name (in case of new socket ID)
+        const existingPlayer = Array.from(room.players.values())
+          .find(p => p.name === playerName && !p.isConnected);
+
+        if (existingPlayer) {
+          // Update player with new socket ID and reconnect
+          room.players.delete(existingPlayer.id);
+          existingPlayer.id = socket.id;
+          existingPlayer.isConnected = true;
+          existingPlayer.lastSeen = Date.now();
+          existingPlayer.reconnectCount++;
+          existingPlayer.disconnectedAt = 0;
+
+          room.players.set(socket.id, existingPlayer);
+          room.lastActivity = Date.now();
+          this.updateRoomState(room);
+
+          socket.join(roomId);
+          socket.emit('reconnected', {
+            playerId: socket.id,
+            roomId,
+            gameState: this.getGameState(room)
+          });
+
+          socket.to(roomId).emit('player-reconnected', {
+            id: socket.id,
+            name: playerName
+          });
+        } else {
+          socket.emit('error', { message: 'Player not found or already connected' });
         }
       });
     });
@@ -210,26 +264,34 @@ class WebGameServer {
       const winner = this.checkWinner(room);
       if (winner) {
         room.isStarted = false;
+        room.state = 'finished';
+        room.endedAt = Date.now();
+        room.lastActivity = Date.now();
         this.io.to(roomId).emit('game-finished', {
           winner: winner.name,
           results: this.getFinalResults(room)
         });
         clearInterval(gameInterval);
+
+        // Schedule room cleanup after game ends
+        setTimeout(() => {
+          this.checkAndCleanupRoom(roomId);
+        }, 5 * 60 * 1000); // 5 minutes after game ends
       }
     }, 1000);
   }
 
   private getGameState(room: GameRoom): any {
     const raceDistance = room.game['raceDistance'] || 100;
-    
+
     // Sort players by position for ranking
     const sortedPlayers = Array.from(room.players.values())
       .sort((a, b) => b.bicycle.position - a.bicycle.position);
-    
-    const players = Array.from(room.players.values()).map((player, index) => {
+
+    const players = Array.from(room.players.values()).map((player) => {
       const rank = sortedPlayers.findIndex(p => p.id === player.id) + 1;
       const distanceFromLeader = sortedPlayers[0] ? sortedPlayers[0].bicycle.position - player.bicycle.position : 0;
-      
+
       return {
         id: player.id,
         name: player.name,
@@ -252,13 +314,13 @@ class WebGameServer {
     });
 
     const raceProgress = players.length > 0 ? Math.max(...players.map(p => p.position)) / raceDistance : 0;
-    
+
     return {
       players,
       raceDistance: raceDistance,
-      currentWeather: room.game['currentWeather'] || { 
-        type: 'sunny', 
-        icon: '☀️', 
+      currentWeather: room.game['currentWeather'] || {
+        type: 'sunny',
+        icon: '☀️',
         description: 'Perfect racing conditions',
         speedModifier: 1.0,
         energyModifier: 1.0
@@ -318,6 +380,83 @@ class WebGameServer {
 
   private generateRoomId(): string {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
+  }
+
+  private handlePlayerDisconnect(socketId: string): void {
+    for (const [roomId, room] of this.rooms) {
+      const player = room.players.get(socketId);
+      if (player) {
+        const now = Date.now();
+        player.isConnected = false;
+        player.disconnectedAt = now;
+        player.lastSeen = now;
+        room.lastActivity = now;
+
+        this.io.to(roomId).emit('player-disconnected', {
+          playerId: socketId,
+          playerName: player.name
+        });
+
+        console.log(`Player ${player.name} disconnected from room ${roomId}`);
+
+        // Check if room should be cleaned up
+        this.checkAndCleanupRoom(roomId);
+        break;
+      }
+    }
+  }
+
+  private updateRoomState(room: GameRoom): void {
+    const connectedPlayers = Array.from(room.players.values()).filter(p => p.isConnected);
+
+    if (connectedPlayers.length === 0) {
+      if (room.state !== 'finished') {
+        room.state = 'empty';
+        console.log(`Room ${room.id} is now empty`);
+      }
+    } else if (room.state === 'empty') {
+      room.state = room.isStarted ? 'active' : 'waiting';
+      console.log(`Room ${room.id} state changed to ${room.state}`);
+    }
+  }
+
+  private checkAndCleanupRoom(roomId: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    const now = Date.now();
+    const connectedPlayers = Array.from(room.players.values()).filter(p => p.isConnected);
+
+    // Remove room if:
+    // 1. No connected players and room has been empty for more than reconnect timeout
+    // 2. Room is finished and has been inactive for more than 5 minutes
+    // 3. Room has been inactive for more than room timeout
+
+    const shouldCleanup =
+      (connectedPlayers.length === 0 &&
+        now - room.lastActivity > this.RECONNECT_TIMEOUT) ||
+      (room.state === 'finished' &&
+        room.endedAt &&
+        now - room.endedAt > 5 * 60 * 1000) ||
+      (now - room.lastActivity > this.ROOM_TIMEOUT);
+
+    if (shouldCleanup) {
+      console.log(`Cleaning up room ${roomId} (state: ${room.state}, inactive for: ${now - room.lastActivity}ms)`);
+      this.rooms.delete(roomId);
+    }
+  }
+
+  private startRoomCleanupTimer(): void {
+    // Run cleanup every 5 minutes
+    setInterval(() => {
+      const roomsToCheck = Array.from(this.rooms.keys());
+
+      roomsToCheck.forEach(roomId => {
+        this.checkAndCleanupRoom(roomId);
+      });
+
+      console.log(`Room cleanup check completed. Active rooms: ${this.rooms.size}`);
+    }, 5 * 60 * 1000);
   }
 
   start(port: number = 3000): void {
