@@ -1,0 +1,31 @@
+{
+  "name": "racing-bicycle-game",
+  "version": "1.0.0",
+  "description": "A simple console-based racing bicycle game",
+  "main": "dist/game.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && node dist/game.js",
+    "dev": "ts-node src/game.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "game",
+    "racing",
+    "bicycle",
+    "console",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "readline-sync": "^1.4.10"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/readline-sync": "^1.4.4",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}
