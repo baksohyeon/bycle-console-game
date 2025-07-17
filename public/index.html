@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚴‍♂️ Web Racing Game</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            flex: 1;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 2.5em;
+            margin-bottom: 30px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        .menu-screen, .lobby-screen, .game-screen {
+            background: rgba(0,0,0,0.7);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        input, button, select {
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            margin: 5px;
+        }
+
+        input, select {
+            background: rgba(255,255,255,0.9);
+            color: #333;
+            width: 200px;
+        }
+
+        button {
+            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .race-track {
+            background: #2c3e50;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+            min-height: 300px;
+        }
+
+        .player-lane {
+            margin: 15px 0;
+            position: relative;
+            height: 50px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 5px;
+            border: 2px solid rgba(255,255,255,0.3);
+        }
+
+        .player-bike {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 24px;
+            transition: left 0.5s ease;
+        }
+
+        .player-info {
+            position: absolute;
+            left: 10px;
+            top: -25px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .progress-bar {
+            position: absolute;
+            bottom: -20px;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff00, #ffff00, #ff0000);
+            transition: width 0.5s ease;
+            border-radius: 2px;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .control-btn {
+            padding: 15px;
+            font-size: 18px;
+            border-radius: 10px;
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            border: 2px solid rgba(255,255,255,0.3);
+            transition: all 0.3s ease;
+        }
+
+        .control-btn:hover {
+            background: linear-gradient(45deg, #764ba2, #667eea);
+            transform: scale(1.05);
+        }
+
+        .stats-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .stat-card {
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .weather-display {
+            text-align: center;
+            font-size: 24px;
+            margin: 10px 0;
+            padding: 10px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 10px;
+        }
+
+        .player-list {
+            list-style: none;
+        }
+
+        .player-list li {
+            padding: 10px;
+            margin: 5px 0;
+            background: rgba(255,255,255,0.1);
+            border-radius: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .room-list {
+            display: grid;
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .room-card {
+            background: rgba(255,255,255,0.1);
+            padding: 20px;
+            border-radius: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .finish-line {
+            position: absolute;
+            right: 20px;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: repeating-linear-gradient(
+                45deg,
+                #000,
+                #000 10px,
+                #fff 10px,
+                #fff 20px
+            );
+        }
+
+        .error-message {
+            background: #e74c3c;
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            text-align: center;
+        }
+
+        .success-message {
+            background: #27ae60;
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            text-align: center;
+        }
+
+        .energy-bar, .speed-bar {
+            height: 20px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 5px 0;
+        }
+
+        .energy-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ff4757, #ffa502, #2ed573);
+            transition: width 0.3s ease;
+        }
+
+        .speed-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3742fa, #2f3542);
+            transition: width 0.3s ease;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            h1 {
+                font-size: 2em;
+            }
+            
+            .controls {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚴‍♂️ Web Racing Game 🚴‍♀️</h1>
+
+        <!-- Menu Screen -->
+        <div id="menu-screen" class="menu-screen">
+            <div class="input-group">
+                <label for="player-name">Your Name:</label>
+                <input type="text" id="player-name" placeholder="Enter your name" maxlength="20">
+            </div>
+            <div class="input-group">
+                <label for="player-color">Your Color:</label>
+                <select id="player-color">
+                    <option value="red">🔴 Red</option>
+                    <option value="blue">🔵 Blue</option>
+                    <option value="green">🟢 Green</option>
+                    <option value="yellow">🟡 Yellow</option>
+                    <option value="purple">🟣 Purple</option>
+                    <option value="orange">🟠 Orange</option>
+                </select>
+            </div>
+            <div style="text-align: center;">
+                <button id="create-room-btn">🎮 Create New Room</button>
+                <button id="refresh-rooms-btn">🔄 Refresh Rooms</button>
+            </div>
+            
+            <div id="room-list" class="room-list"></div>
+            <div id="error-message" class="error-message hidden"></div>
+        </div>
+
+        <!-- Lobby Screen -->
+        <div id="lobby-screen" class="lobby-screen hidden">
+            <h2>🏁 Race Lobby</h2>
+            <div>
+                <strong>Room ID:</strong> <span id="room-id"></span>
+                <button id="copy-room-id" style="margin-left: 10px;">📋 Copy</button>
+            </div>
+            
+            <h3>Players:</h3>
+            <ul id="player-list" class="player-list"></ul>
+            
+            <div style="text-align: center; margin-top: 20px;">
+                <button id="start-game-btn">🏁 Start Race</button>
+                <button id="leave-room-btn">🚪 Leave Room</button>
+            </div>
+        </div>
+
+        <!-- Game Screen -->
+        <div id="game-screen" class="game-screen hidden">
+            <div class="weather-display" id="weather-display">
+                ☀️ Sunny - Perfect racing conditions
+            </div>
+
+            <div class="race-track" id="race-track">
+                <div class="finish-line"></div>
+                <div id="players-container"></div>
+            </div>
+
+            <div class="stats-panel">
+                <div class="stat-card">
+                    <h3>Your Stats</h3>
+                    <div>Speed: <span id="player-speed">0</span>/10</div>
+                    <div class="speed-bar">
+                        <div class="speed-fill" id="speed-fill"></div>
+                    </div>
+                    <div>Energy: <span id="player-energy">100</span>/100</div>
+                    <div class="energy-bar">
+                        <div class="energy-fill" id="energy-fill"></div>
+                    </div>
+                    <div>Position: <span id="player-position">0</span>m</div>
+                    <div>Level: <span id="player-level">1</span></div>
+                </div>
+                
+                <div class="stat-card">
+                    <h3>Race Info</h3>
+                    <div>Distance: <span id="race-distance">100</span>m</div>
+                    <div>Players: <span id="active-players">1</span></div>
+                    <div id="powerups-display"></div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button class="control-btn" id="accelerate-btn">
+                    🚀 Accelerate<br>
+                    <small>Uses energy</small>
+                </button>
+                <button class="control-btn" id="coast-btn">
+                    🌊 Coast<br>
+                    <small>Recover energy</small>
+                </button>
+                <button class="control-btn" id="brake-btn">
+                    🛑 Brake<br>
+                    <small>Slow down, recover energy</small>
+                </button>
+                <button class="control-btn" id="burst-btn">
+                    ⚡ Energy Burst<br>
+                    <small>20 energy for speed boost</small>
+                </button>
+            </div>
+
+            <div style="text-align: center;">
+                <button id="leave-game-btn">🚪 Leave Game</button>
+            </div>
+        </div>
+
+        <!-- Results Screen -->
+        <div id="results-screen" class="menu-screen hidden">
+            <h2>🏁 Race Results</h2>
+            <div id="results-content"></div>
+            <div style="text-align: center; margin-top: 20px;">
+                <button id="new-race-btn">🎮 New Race</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let currentRoom = null;
+        let playerId = null;
+        let playerName = '';
+        let gameState = null;
+
+        // Screen elements
+        const menuScreen = document.getElementById('menu-screen');
+        const lobbyScreen = document.getElementById('lobby-screen');
+        const gameScreen = document.getElementById('game-screen');
+        const resultsScreen = document.getElementById('results-screen');
+
+        // Menu elements
+        const playerNameInput = document.getElementById('player-name');
+        const playerColorSelect = document.getElementById('player-color');
+        const createRoomBtn = document.getElementById('create-room-btn');
+        const refreshRoomsBtn = document.getElementById('refresh-rooms-btn');
+        const roomList = document.getElementById('room-list');
+        const errorMessage = document.getElementById('error-message');
+
+        // Lobby elements
+        const roomIdSpan = document.getElementById('room-id');
+        const copyRoomIdBtn = document.getElementById('copy-room-id');
+        const playerListUl = document.getElementById('player-list');
+        const startGameBtn = document.getElementById('start-game-btn');
+        const leaveRoomBtn = document.getElementById('leave-room-btn');
+
+        // Game elements
+        const weatherDisplay = document.getElementById('weather-display');
+        const raceTrack = document.getElementById('race-track');
+        const playersContainer = document.getElementById('players-container');
+        const playerSpeed = document.getElementById('player-speed');
+        const playerEnergy = document.getElementById('player-energy');
+        const playerPosition = document.getElementById('player-position');
+        const playerLevel = document.getElementById('player-level');
+        const speedFill = document.getElementById('speed-fill');
+        const energyFill = document.getElementById('energy-fill');
+        const raceDistance = document.getElementById('race-distance');
+        const activePlayersSpan = document.getElementById('active-players');
+        const powerupsDisplay = document.getElementById('powerups-display');
+
+        // Control buttons
+        const accelerateBtn = document.getElementById('accelerate-btn');
+        const coastBtn = document.getElementById('coast-btn');
+        const brakeBtn = document.getElementById('brake-btn');
+        const burstBtn = document.getElementById('burst-btn');
+        const leaveGameBtn = document.getElementById('leave-game-btn');
+
+        // Results elements
+        const resultsContent = document.getElementById('results-content');
+        const newRaceBtn = document.getElementById('new-race-btn');
+
+        // Utility functions
+        function showScreen(screen) {
+            [menuScreen, lobbyScreen, gameScreen, resultsScreen].forEach(s => s.classList.add('hidden'));
+            screen.classList.remove('hidden');
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+            setTimeout(() => errorMessage.classList.add('hidden'), 5000);
+        }
+
+        function getColorEmoji(color) {
+            const colorMap = {
+                red: '🔴', blue: '🔵', green: '🟢', 
+                yellow: '🟡', purple: '🟣', orange: '🟠'
+            };
+            return colorMap[color] || '⚪';
+        }
+
+        // Room management
+        async function loadRooms() {
+            try {
+                const response = await fetch('/api/rooms');
+                const rooms = await response.json();
+                
+                roomList.innerHTML = '';
+                if (rooms.length === 0) {
+                    roomList.innerHTML = '<div style="text-align: center; color: #bbb;">No active rooms</div>';
+                    return;
+                }
+
+                rooms.forEach(room => {
+                    const roomCard = document.createElement('div');
+                    roomCard.className = 'room-card';
+                    roomCard.innerHTML = `
+                        <div>
+                            <strong>Room ${room.id}</strong><br>
+                            <small>${room.playerCount}/${room.maxPlayers} players</small>
+                        </div>
+                        <button onclick="joinRoom('${room.id}')" ${room.isStarted || room.playerCount >= room.maxPlayers ? 'disabled' : ''}>
+                            ${room.isStarted ? '🏁 In Progress' : room.playerCount >= room.maxPlayers ? '🚫 Full' : '🎮 Join'}
+                        </button>
+                    `;
+                    roomList.appendChild(roomCard);
+                });
+            } catch (error) {
+                showError('Failed to load rooms');
+            }
+        }
+
+        async function createRoom() {
+            const name = playerNameInput.value.trim();
+            if (!name) {
+                showError('Please enter your name');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/rooms', { method: 'POST' });
+                const data = await response.json();
+                joinRoom(data.roomId);
+            } catch (error) {
+                showError('Failed to create room');
+            }
+        }
+
+        function joinRoom(roomId) {
+            const name = playerNameInput.value.trim();
+            const color = playerColorSelect.value;
+
+            if (!name) {
+                showError('Please enter your name');
+                return;
+            }
+
+            playerName = name;
+            socket.emit('join-room', { roomId, playerName: name, playerColor: color });
+        }
+
+        // Game controls
+        function sendAction(action) {
+            if (currentRoom) {
+                socket.emit('player-action', { roomId: currentRoom, action });
+            }
+        }
+
+        function updateGameDisplay() {
+            if (!gameState) return;
+
+            const currentPlayer = gameState.players.find(p => p.id === playerId);
+            if (currentPlayer) {
+                playerSpeed.textContent = Math.floor(currentPlayer.speed);
+                playerEnergy.textContent = Math.floor(currentPlayer.energy);
+                playerPosition.textContent = Math.floor(currentPlayer.position);
+                playerLevel.textContent = currentPlayer.level;
+
+                speedFill.style.width = `${(currentPlayer.speed / 10) * 100}%`;
+                energyFill.style.width = `${(currentPlayer.energy / currentPlayer.maxEnergy) * 100}%`;
+            }
+
+            raceDistance.textContent = gameState.raceDistance;
+            activePlayersSpan.textContent = gameState.players.length;
+
+            if (gameState.weather) {
+                weatherDisplay.textContent = `${gameState.weather.icon} ${gameState.weather.type} - ${gameState.weather.description}`;
+            }
+
+            // Update race track
+            playersContainer.innerHTML = '';
+            gameState.players.forEach((player, index) => {
+                const lane = document.createElement('div');
+                lane.className = 'player-lane';
+                
+                const progress = Math.min((player.position / gameState.raceDistance) * 100, 100);
+                
+                lane.innerHTML = `
+                    <div class="player-info" style="color: ${player.color};">
+                        ${getColorEmoji(player.color)} ${player.name} (Lvl ${player.level})
+                    </div>
+                    <div class="player-bike" style="left: ${progress}%; color: ${player.color};">
+                        🚴‍♂️
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${progress}%; background-color: ${player.color};"></div>
+                    </div>
+                `;
+                
+                playersContainer.appendChild(lane);
+            });
+
+            // Update power-ups display
+            if (gameState.powerUps && gameState.powerUps.length > 0) {
+                powerupsDisplay.innerHTML = `Power-ups: ${gameState.powerUps.map(p => `${p.icon} ${p.name}`).join(', ')}`;
+            } else {
+                powerupsDisplay.innerHTML = 'No power-ups available';
+            }
+        }
+
+        // Socket event handlers
+        socket.on('joined-room', (data) => {
+            currentRoom = data.roomId;
+            playerId = data.playerId;
+            roomIdSpan.textContent = data.roomId;
+            
+            playerListUl.innerHTML = '';
+            data.players.forEach(player => {
+                const li = document.createElement('li');
+                li.innerHTML = `
+                    <span>${getColorEmoji(player.color)} ${player.name}</span>
+                    <span>${player.isConnected ? '🟢 Online' : '🔴 Offline'}</span>
+                `;
+                playerListUl.appendChild(li);
+            });
+            
+            showScreen(lobbyScreen);
+        });
+
+        socket.on('player-joined', (player) => {
+            const li = document.createElement('li');
+            li.innerHTML = `
+                <span>${getColorEmoji(player.color)} ${player.name}</span>
+                <span>🟢 Online</span>
+            `;
+            playerListUl.appendChild(li);
+        });
+
+        socket.on('game-started', () => {
+            showScreen(gameScreen);
+        });
+
+        socket.on('game-update', (newGameState) => {
+            gameState = newGameState;
+            updateGameDisplay();
+        });
+
+        socket.on('game-finished', (data) => {
+            resultsContent.innerHTML = `
+                <h3>🏆 Winner: ${data.winner}</h3>
+                <div style="margin: 20px 0;">
+                    <h4>Final Results:</h4>
+                    ${data.results.map((result, index) => `
+                        <div style="padding: 10px; margin: 5px 0; background: rgba(255,255,255,0.1); border-radius: 5px;">
+                            <strong>${['🥇', '🥈', '🥉', '4️⃣'][index] || `${index + 1}️⃣`} ${result.name}</strong><br>
+                            <small>Distance: ${Math.floor(result.finalPosition)}m | Avg Speed: ${result.stats.avgSpeed.toFixed(1)}</small>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+            showScreen(resultsScreen);
+        });
+
+        socket.on('error', (data) => {
+            showError(data.message);
+        });
+
+        // Event listeners
+        createRoomBtn.addEventListener('click', createRoom);
+        refreshRoomsBtn.addEventListener('click', loadRooms);
+        
+        copyRoomIdBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(currentRoom);
+            copyRoomIdBtn.textContent = '✅ Copied!';
+            setTimeout(() => copyRoomIdBtn.textContent = '📋 Copy', 2000);
+        });
+
+        startGameBtn.addEventListener('click', () => {
+            socket.emit('start-game', { roomId: currentRoom });
+        });
+
+        leaveRoomBtn.addEventListener('click', () => {
+            currentRoom = null;
+            playerId = null;
+            showScreen(menuScreen);
+            loadRooms();
+        });
+
+        leaveGameBtn.addEventListener('click', () => {
+            currentRoom = null;
+            playerId = null;
+            showScreen(menuScreen);
+            loadRooms();
+        });
+
+        newRaceBtn.addEventListener('click', () => {
+            currentRoom = null;
+            playerId = null;
+            showScreen(menuScreen);
+            loadRooms();
+        });
+
+        // Game controls
+        accelerateBtn.addEventListener('click', () => sendAction('accelerate'));
+        coastBtn.addEventListener('click', () => sendAction('coast'));
+        brakeBtn.addEventListener('click', () => sendAction('brake'));
+        burstBtn.addEventListener('click', () => sendAction('energy-burst'));
+
+        // Keyboard controls
+        document.addEventListener('keydown', (e) => {
+            if (gameScreen.classList.contains('hidden')) return;
+            
+            switch(e.key) {
+                case '1': case 'ArrowUp': sendAction('accelerate'); break;
+                case '2': case 'ArrowDown': sendAction('coast'); break;
+                case '3': case 'ArrowLeft': sendAction('brake'); break;
+                case '4': case 'ArrowRight': sendAction('energy-burst'); break;
+            }
+        });
+
+        // Initialize
+        playerNameInput.value = localStorage.getItem('playerName') || '';
+        playerColorSelect.value = localStorage.getItem('playerColor') || 'blue';
+
+        playerNameInput.addEventListener('input', () => {
+            localStorage.setItem('playerName', playerNameInput.value);
+        });
+
+        playerColorSelect.addEventListener('change', () => {
+            localStorage.setItem('playerColor', playerColorSelect.value);
+        });
+
+        loadRooms();
+    </script>
+</body>
+</html>
