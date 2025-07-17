@@ -199,7 +199,13 @@ class WebGameServer {
       });
 
       const gameState = this.getGameState(room);
-      this.io.to(roomId).emit('game-update', gameState);
+      console.log(`📊 Broadcasting game state to room ${roomId}:`, {
+        players: gameState.players?.length || 0,
+        raceDistance: gameState.raceDistance,
+        turnCount: gameState.turnCount,
+        raceProgress: gameState.raceProgress
+      });
+      this.io.to(roomId).emit('game-state-update', gameState);
 
       const winner = this.checkWinner(room);
       if (winner) {
@@ -214,23 +220,70 @@ class WebGameServer {
   }
 
   private getGameState(room: GameRoom): any {
-    const players = Array.from(room.players.values()).map(player => ({
-      id: player.id,
-      name: player.name,
-      color: player.color,
-      position: player.bicycle.position,
-      speed: player.bicycle.speed,
-      energy: player.bicycle.energy,
-      maxEnergy: player.bicycle['_maxEnergy'],
-      level: player.bicycle.level,
-      activePowerUps: player.bicycle.activePowerUps
-    }));
+    const raceDistance = room.game['raceDistance'] || 100;
+    
+    // Sort players by position for ranking
+    const sortedPlayers = Array.from(room.players.values())
+      .sort((a, b) => b.bicycle.position - a.bicycle.position);
+    
+    const players = Array.from(room.players.values()).map((player, index) => {
+      const rank = sortedPlayers.findIndex(p => p.id === player.id) + 1;
+      const distanceFromLeader = sortedPlayers[0] ? sortedPlayers[0].bicycle.position - player.bicycle.position : 0;
+      
+      return {
+        id: player.id,
+        name: player.name,
+        color: player.color,
+        position: player.bicycle.position || 0,
+        speed: player.bicycle.speed || 0,
+        energy: player.bicycle.energy || 100,
+        maxSpeed: player.bicycle['maxSpeed'] || player.bicycle['_maxSpeed'] || 20,
+        maxEnergy: player.bicycle.stats.maxEnergy || 100,
+        level: player.bicycle.level || 1,
+        activePowerUps: player.bicycle.activePowerUps || [],
+        isHuman: true, // All players in rooms are human
+        rank: rank,
+        lastAction: 'coast', // Default action
+        energyTrend: 'stable' as const,
+        speedTrend: 'stable' as const,
+        positionChange: 0,
+        distanceFromLeader: distanceFromLeader
+      };
+    });
 
+    const raceProgress = players.length > 0 ? Math.max(...players.map(p => p.position)) / raceDistance : 0;
+    
     return {
       players,
-      raceDistance: room.game['raceDistance'],
-      weather: room.game['currentWeather'],
-      powerUps: room.game['powerUps']
+      raceDistance: raceDistance,
+      currentWeather: room.game['currentWeather'] || { 
+        type: 'sunny', 
+        icon: '☀️', 
+        description: 'Perfect racing conditions',
+        speedModifier: 1.0,
+        energyModifier: 1.0
+      },
+      powerUps: room.game['powerUps'] || [],
+      turnCount: room.game['turnCount'] || 0,
+      raceType: 'sprint',
+      raceStartTime: Date.now(),
+      raceElapsedTime: 0,
+      isRaceActive: room.isStarted,
+      raceProgress: Math.min(raceProgress, 1),
+      gamePhase: raceProgress < 0.25 ? 'early' : raceProgress < 0.75 ? 'middle' : raceProgress < 0.9 ? 'final' : 'sprint',
+      leaderboard: sortedPlayers.slice(0, 3).map((player, i) => ({
+        position: i + 1,
+        name: player.name,
+        distance: Math.floor(player.bicycle.position),
+        speed: Math.floor(player.bicycle.speed)
+      })),
+      statistics: {
+        totalTurns: room.game['turnCount'] || 0,
+        averageSpeed: players.length > 0 ? players.reduce((sum, p) => sum + p.speed, 0) / players.length : 0,
+        weatherChanges: 0,
+        powerUpsSpawned: 0,
+        totalDistance: raceDistance
+      }
     };
   }
 
@@ -259,7 +312,8 @@ class WebGameServer {
     if (!room) return;
 
     const gameState = this.getGameState(room);
-    this.io.to(roomId).emit('game-update', gameState);
+    console.log(`📡 Broadcasting updated game state to room ${roomId}`);
+    this.io.to(roomId).emit('game-state-update', gameState);
   }
 
   private generateRoomId(): string {

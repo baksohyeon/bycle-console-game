@@ -622,7 +622,8 @@
             showScreen(gameScreen);
         });
 
-        socket.on('game-update', (newGameState) => {
+        socket.on('game-state-update', (newGameState) => {
+            console.log('📡 Received game state update:', newGameState);
             gameState = newGameState;
             updateGameDisplay();
         });
