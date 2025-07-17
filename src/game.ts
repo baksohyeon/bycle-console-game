@@ -573,6 +573,59 @@ class RacingGame {
     }
   }
 
+  private handleGameCompletion(): void {
+    console.log(chalk.green.bold('\n✨ Race Complete! ✨'));
+    readlineSync.question('Press Enter to continue to main menu...');
+
+    this.resetForNewRace();
+    this.showMainMenu();
+  }
+
+  private resetForNewRace(): void {
+    // Reset game state for a new race
+    this.players = [];
+    this.gameRunning = false;
+    this.winner = null;
+    this.powerUps = [];
+    this.turnCount = 0;
+    this.gameState = 'setup';
+    this.tournament = null;
+
+    // Reset weather to sunny
+    this.currentWeather = {
+      type: 'sunny',
+      description: 'Perfect racing conditions',
+      speedModifier: 1.0,
+      energyModifier: 1.0,
+      icon: '☀️'
+    };
+  }
+
+  private setupSingleRace(): void {
+    console.log(chalk.blue.bold('\n🏁 SINGLE RACE SETUP'));
+
+    // Setup race type
+    this.setupRaceType();
+
+    // Add human player
+    this.addPlayer(this.playerProfile.name, 'cyan', false);
+
+    // Add AI opponents with different difficulties
+    const aiOpponents = [
+      { name: 'Speed Demon', color: 'red', difficulty: 'hard' as const },
+      { name: 'Wind Rider', color: 'green', difficulty: 'medium' as const },
+      { name: 'Gear Shifter', color: 'yellow', difficulty: 'expert' as const }
+    ];
+
+    aiOpponents.forEach(ai => {
+      this.addPlayer(ai.name, ai.color, true, ai.difficulty);
+    });
+
+    console.log(chalk.green(`\n🏁 Race setup complete! You're racing against ${aiOpponents.map(ai => ai.name).join(', ')}`));
+    console.log(chalk.gray(`Race type: ${this.currentRaceType} | Distance: ${this.raceDistance} meters`));
+    console.log(chalk.gray(`Weather: ${this.currentWeather.icon} ${this.currentWeather.type}`));
+  }
+
   private checkNewUpgrades(): void {
     const availableUpgrades = this.bikeUpgrades.filter(
       upgrade => upgrade.unlockLevel <= this.playerProfile.level &&
@@ -635,8 +688,18 @@ class RacingGame {
     console.log(chalk.blue.bold('🚴‍♂️ Welcome to the Enhanced Bicycle Racing Game! 🚴‍♀️'));
     console.log('');
 
+    // Get player name if not set
+    if (this.playerProfile.name === 'Player') {
+      const playerName = readlineSync.question('Enter your name: ') || 'Player';
+      this.playerProfile.name = playerName;
+    }
+
+    this.showMainMenu();
+  }
+
+  private showMainMenu(): void {
     // Show player profile
-    console.log(chalk.cyan.bold('👤 PLAYER PROFILE:'));
+    console.log(chalk.cyan.bold('\n👤 PLAYER PROFILE:'));
     console.log(`Level: ${this.playerProfile.level} | Experience: ${this.playerProfile.experience}`);
     console.log(`Total Races: ${this.playerProfile.totalRaces} | Wins: ${this.playerProfile.wins}`);
     console.log(`Credits: ${this.playerProfile.credits} | Current Bike: ${this.playerProfile.currentBike.name}`);
@@ -648,49 +711,34 @@ class RacingGame {
     console.log('2. 🏆 Tournament Mode');
     console.log('3. 🛒 Upgrade Shop');
     console.log('4. 📊 View Statistics');
+    console.log('5. 🚪 Exit Game');
 
-    const modeChoice = readlineSync.question('Enter choice (1-4): ');
+    const modeChoice = readlineSync.question('Enter choice (1-5): ');
 
     switch (modeChoice) {
+      case '1':
+        this.setupSingleRace();
+        this.startRace();
+        break;
       case '2':
         this.setupTournament();
-        return;
+        break;
       case '3':
         this.showUpgradeShop();
-        this.setupGame(); // Return to menu after shopping
-        return;
+        this.showMainMenu(); // Return to menu after shopping
+        break;
       case '4':
         this.showStatistics();
-        this.setupGame(); // Return to menu after viewing stats
-        return;
-      default:
-        // Continue with single race setup
+        this.showMainMenu(); // Return to menu after viewing stats
         break;
+      case '5':
+        console.log(chalk.green.bold('\n🏁 Thanks for playing! See you next time! 🚴‍♂️'));
+        process.exit(0);
+        break;
+      default:
+        console.log(chalk.yellow('Invalid choice, please try again.'));
+        this.showMainMenu();
     }
-
-    const playerName = readlineSync.question('Enter your name: ') || 'Player';
-    this.playerProfile.name = playerName;
-
-    // Setup race type
-    this.setupRaceType();
-
-    this.addPlayer(playerName, 'cyan', false);
-
-    // Add AI opponents with different difficulties
-    const aiOpponents = [
-      { name: 'Speed Demon', color: 'red', difficulty: 'hard' as const },
-      { name: 'Wind Rider', color: 'green', difficulty: 'medium' as const },
-      { name: 'Gear Shifter', color: 'yellow', difficulty: 'expert' as const }
-    ];
-
-    aiOpponents.forEach(ai => {
-      this.addPlayer(ai.name, ai.color, true, ai.difficulty);
-    });
-
-    console.log(chalk.green(`\n🏁 Race setup complete! You're racing against ${aiOpponents.map(ai => ai.name).join(', ')}`));
-    console.log(chalk.gray(`Race type: ${this.currentRaceType} | Distance: ${this.raceDistance} meters`));
-    console.log(chalk.gray(`Weather: ${this.currentWeather.icon} ${this.currentWeather.type}`));
-    console.log('');
   }
 
   private setupTournament(): void {
@@ -751,6 +799,7 @@ class RacingGame {
     }
 
     this.showTournamentResults();
+    this.handleGameCompletion();
   }
 
   private updateTournamentStandings(pointMultiplier: number): void {
@@ -817,7 +866,6 @@ class RacingGame {
 function main(): void {
   const game = new RacingGame();
   game.setupGame();
-  game.startRace();
 }
 
 // Start the game
