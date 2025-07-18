@@ -2,11 +2,13 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { RacingGame } from './game';
 import { RacingBicycle } from './RacingBicycle';
 
 interface WebPlayer {
   id: string;
+  persistentId: string; // Unique ID that persists across reconnections
   name: string;
   color: string;
   bicycle: RacingBicycle | null; // null for spectators
@@ -119,16 +121,17 @@ class WebGameServer {
     this.io.on('connection', (socket) => {
       console.log('Player connected:', socket.id);
 
-      socket.on('join-room', ({ roomId, playerName, playerColor }) => {
+      socket.on('join-room', ({ roomId, playerName, playerColor, persistentPlayerId }) => {
         const room = this.rooms.get(roomId);
         if (!room) {
           socket.emit('error', { message: 'Room not found' });
           return;
         }
 
-        // Check if player is trying to reconnect
-        const existingPlayer = Array.from(room.players.values())
-          .find(p => p.name === playerName && !p.isConnected);
+        // Check if player is trying to reconnect using persistent ID first, then fallback to name
+        const existingPlayer = persistentPlayerId
+          ? Array.from(room.players.values()).find(p => p.persistentId === persistentPlayerId && !p.isConnected)
+          : Array.from(room.players.values()).find(p => p.name === playerName && !p.isConnected);
 
         if (existingPlayer) {
           // Handle reconnection
@@ -156,6 +159,7 @@ class WebGameServer {
         const now = Date.now();
         const player: WebPlayer = {
           id: socket.id,
+          persistentId: randomUUID(),
           name: playerName,
           color: playerColor,
           bicycle,
@@ -182,6 +186,7 @@ class WebGameServer {
 
         const joinResponse = {
           playerId: socket.id,
+          persistentPlayerId: player.persistentId,
           roomId,
           isOwner: room.ownerId === socket.id,
           ownerName: room.ownerName,
@@ -279,16 +284,17 @@ class WebGameServer {
         this.handlePlayerDisconnect(socket.id);
       });
 
-      socket.on('reconnect-attempt', ({ roomId, playerName }) => {
+      socket.on('reconnect-attempt', ({ roomId, playerName, persistentPlayerId }) => {
         const room = this.rooms.get(roomId);
         if (!room) {
           socket.emit('error', { message: 'Room not found' });
           return;
         }
 
-        // Find player by name (in case of new socket ID)
-        const existingPlayer = Array.from(room.players.values())
-          .find(p => p.name === playerName && !p.isConnected);
+        // Find player by persistent ID first, then fallback to name
+        const existingPlayer = persistentPlayerId
+          ? Array.from(room.players.values()).find(p => p.persistentId === persistentPlayerId && !p.isConnected)
+          : Array.from(room.players.values()).find(p => p.name === playerName && !p.isConnected);
 
         if (existingPlayer) {
           // Update player with new socket ID and reconnect
@@ -505,6 +511,7 @@ class WebGameServer {
     
     const reconnectResponse = {
       playerId: socket.id,
+      persistentPlayerId: existingPlayer.persistentId,
       roomId,
       isOwner: room.ownerId === socket.id,
       ownerName: room.ownerName,
@@ -545,6 +552,7 @@ class WebGameServer {
     const now = Date.now();
     const spectator: WebPlayer = {
       id: socket.id,
+      persistentId: randomUUID(),
       name: playerName,
       color: playerColor,
       bicycle: null, // Spectators don't have bicycles
@@ -561,6 +569,7 @@ class WebGameServer {
 
     const spectatorResponse = {
       playerId: socket.id,
+      persistentPlayerId: spectator.persistentId,
       roomId,
       isOwner: false,
       ownerName: room.ownerName,
