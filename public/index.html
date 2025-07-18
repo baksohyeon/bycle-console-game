@@ -471,6 +471,71 @@
             return colorMap[color] || '⚪';
         }
 
+        function updatePlayerList(players) {
+            playerListUl.innerHTML = '';
+            
+            // Separate players and spectators
+            const activePlayers = players.filter(p => !p.isSpectator);
+            const spectators = players.filter(p => p.isSpectator);
+            
+            // Add active players
+            if (activePlayers.length > 0) {
+                const playersHeader = document.createElement('li');
+                playersHeader.innerHTML = '<strong>🏁 Racing Players:</strong>';
+                playersHeader.style.background = 'rgba(255,255,255,0.2)';
+                playerListUl.appendChild(playersHeader);
+                
+                activePlayers.forEach(player => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <span>${getColorEmoji(player.color)} ${player.name} ${player.isOwner ? '👑' : ''}</span>
+                        <span>${player.isConnected ? '🟢 Online' : '🔴 Offline'}</span>
+                    `;
+                    playerListUl.appendChild(li);
+                });
+            }
+            
+            // Add spectators
+            if (spectators.length > 0) {
+                const spectatorsHeader = document.createElement('li');
+                spectatorsHeader.innerHTML = '<strong>👀 Spectators:</strong>';
+                spectatorsHeader.style.background = 'rgba(255,255,255,0.1)';
+                playerListUl.appendChild(spectatorsHeader);
+                
+                spectators.forEach(spectator => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <span>👀 ${getColorEmoji(spectator.color)} ${spectator.name}</span>
+                        <span>${spectator.isConnected ? '🟢 Online' : '🔴 Offline'}</span>
+                    `;
+                    li.style.opacity = '0.8';
+                    playerListUl.appendChild(li);
+                });
+            }
+        }
+
+        function updatePlayerListAfterLeave(leaveData) {
+            // Remove player from current display
+            const playerItems = playerListUl.querySelectorAll('li');
+            playerItems.forEach(item => {
+                if (item.textContent.includes(leaveData.playerName)) {
+                    item.remove();
+                }
+            });
+            
+            // Update ownership display if needed
+            if (leaveData.newOwner && leaveData.wasOwner) {
+                playerItems.forEach(item => {
+                    if (item.textContent.includes(leaveData.newOwner)) {
+                        const span = item.querySelector('span');
+                        if (span && !span.textContent.includes('👑')) {
+                            span.innerHTML = span.innerHTML + ' 👑';
+                        }
+                    }
+                });
+            }
+        }
+
         // Room management
         async function loadRooms() {
             try {
@@ -488,10 +553,18 @@
                 rooms.forEach(room => {
                     const roomCard = document.createElement('div');
                     roomCard.className = 'room-card';
+                    
+                    const playerInfo = room.spectatorCount > 0 ? 
+                        `${room.activePlayerCount} players + ${room.spectatorCount} spectators` : 
+                        `${room.playerCount} players`;
+                        
+                    const ownerInfo = room.ownerName ? `Owner: ${room.ownerName}` : 'No owner';
+                    
                     roomCard.innerHTML = `
                         <div>
-                            <strong>Room ${room.id}</strong><br>
-                            <small>${room.playerCount}/${room.maxPlayers} players | State: ${room.state}</small>
+                            <strong>Room ${room.id}</strong> ${room.ownerName ? '👑' : ''}<br>
+                            <small>${playerInfo} / ${room.maxPlayers} max | ${room.state}</small><br>
+                            <small style="color: #bbb;">${ownerInfo}</small>
                         </div>
                         <button onclick="joinRoom('${room.id}')" ${room.isStarted || room.playerCount >= room.maxPlayers ? 'disabled' : ''}>
                             ${room.isStarted ? '🏁 In Progress' : room.playerCount >= room.maxPlayers ? '🚫 Full' : '🎮 Join'}
@@ -562,9 +635,11 @@
                 weatherDisplay.textContent = `${gameState.weather.icon} ${gameState.weather.type} - ${gameState.weather.description}`;
             }
 
-            // Update race track
+            // Update race track - only show active players (not spectators)
             playersContainer.innerHTML = '';
-            gameState.players.forEach((player, index) => {
+            const activePlayers = gameState.players.filter(p => !p.isSpectator);
+            
+            activePlayers.forEach((player, index) => {
                 const lane = document.createElement('div');
                 lane.className = 'player-lane';
                 
@@ -572,7 +647,7 @@
                 
                 lane.innerHTML = `
                     <div class="player-info" style="color: ${player.color};">
-                        ${getColorEmoji(player.color)} ${player.name} (Lvl ${player.level})
+                        ${getColorEmoji(player.color)} ${player.name} (Lvl ${player.level}) ${player.rank ? `#${player.rank}` : ''}
                     </div>
                     <div class="player-bike" style="left: ${progress}%; color: ${player.color};">
                         🚴‍♂️
@@ -584,6 +659,17 @@
                 
                 playersContainer.appendChild(lane);
             });
+
+            // Show spectator count if any
+            const spectators = gameState.players.filter(p => p.isSpectator);
+            if (spectators.length > 0) {
+                const spectatorInfo = document.createElement('div');
+                spectatorInfo.style.textAlign = 'center';
+                spectatorInfo.style.color = '#bbb';
+                spectatorInfo.style.marginTop = '10px';
+                spectatorInfo.innerHTML = `👀 ${spectators.length} spectator${spectators.length > 1 ? 's' : ''} watching: ${spectators.map(s => s.name).join(', ')}`;
+                playersContainer.appendChild(spectatorInfo);
+            }
 
             // Update power-ups display
             if (gameState.powerUps && gameState.powerUps.length > 0) {
@@ -599,26 +685,58 @@
             playerId = data.playerId;
             roomIdSpan.textContent = data.roomId;
             
-            // Update start button visibility based on ownership
-            startGameBtn.style.display = data.isOwner ? 'inline-block' : 'none';
-            if (!data.isOwner && data.ownerName) {
-                startGameBtn.parentNode.insertBefore(
-                    document.createTextNode(`Only ${data.ownerName} can start the game`),
-                    startGameBtn
-                );
+            console.log('🏠 Joined room:', data);
+            
+            // Handle spectator mode
+            if (data.isSpectator) {
+                console.log('👀 Joined as spectator');
+                if (data.gameState) {
+                    // Game is active, join as spectator
+                    gameState = data.gameState;
+                    showScreen(gameScreen);
+                    updateGameDisplay();
+                    
+                    // Hide controls for spectators
+                    document.querySelector('.controls').style.display = 'none';
+                    
+                    // Show spectator notice
+                    const spectatorNotice = document.createElement('div');
+                    spectatorNotice.className = 'success-message';
+                    spectatorNotice.textContent = '👀 You are watching as a spectator';
+                    gameScreen.insertBefore(spectatorNotice, gameScreen.firstChild);
+                } else {
+                    showScreen(lobbyScreen);
+                }
+            } else if (data.reconnected) {
+                console.log('🔄 Reconnected to room');
+                if (data.gameState) {
+                    gameState = data.gameState;
+                    showScreen(gameScreen);
+                    updateGameDisplay();
+                } else {
+                    showScreen(lobbyScreen);
+                }
+            } else {
+                // Normal join
+                showScreen(lobbyScreen);
             }
             
-            playerListUl.innerHTML = '';
-            data.players.forEach(player => {
-                const li = document.createElement('li');
-                li.innerHTML = `
-                    <span>${getColorEmoji(player.color)} ${player.name} ${player.isOwner ? '👑' : ''}</span>
-                    <span>${player.isConnected ? '🟢 Online' : '🔴 Offline'}</span>
-                `;
-                playerListUl.appendChild(li);
-            });
+            // Update start button visibility based on ownership and spectator status
+            if (data.isSpectator) {
+                startGameBtn.style.display = 'none';
+            } else {
+                startGameBtn.style.display = data.isOwner ? 'inline-block' : 'none';
+                if (!data.isOwner && data.ownerName) {
+                    const ownerNotice = document.createElement('div');
+                    ownerNotice.textContent = `Only ${data.ownerName} can start the game`;
+                    ownerNotice.style.color = '#bbb';
+                    ownerNotice.style.textAlign = 'center';
+                    startGameBtn.parentNode.insertBefore(ownerNotice, startGameBtn);
+                }
+            }
             
-            showScreen(lobbyScreen);
+            // Update player list
+            updatePlayerList(data.players);
         });
 
         socket.on('player-joined', (player) => {
@@ -675,6 +793,54 @@
             showScreen(resultsScreen);
         });
 
+        socket.on('left-room', (data) => {
+            console.log('🚪 Left room:', data);
+            
+            // Clear current room state
+            currentRoom = null;
+            playerId = null;
+            gameState = null;
+            
+            // Show success message
+            const notification = document.createElement('div');
+            notification.className = 'success-message';
+            notification.textContent = `✅ ${data.message}`;
+            menuScreen.appendChild(notification);
+            setTimeout(() => notification.remove(), 3000);
+            
+            // Return to menu and refresh room list
+            showScreen(menuScreen);
+            loadRooms();
+        });
+
+        socket.on('player-left', (data) => {
+            console.log('👋 Player left room:', data);
+            
+            // Update player list by removing the player
+            updatePlayerListAfterLeave(data);
+            
+            // Show notification
+            const message = data.voluntary ? 'left the room' : 'disconnected';
+            const notification = document.createElement('div');
+            notification.className = 'info';
+            notification.textContent = `${data.playerName} ${message}${data.wasOwner ? ' (was owner)' : ''}`;
+            
+            if (lobbyScreen.classList.contains('hidden')) {
+                // In game, show temporary notification
+                gameScreen.appendChild(notification);
+                setTimeout(() => notification.remove(), 5000);
+            } else {
+                // In lobby, show in lobby
+                lobbyScreen.appendChild(notification);
+                setTimeout(() => notification.remove(), 5000);
+            }
+            
+            // Refresh room list on menu screen to show updated player counts
+            if (menuScreen && !menuScreen.classList.contains('hidden')) {
+                loadRooms();
+            }
+        });
+
         socket.on('game-started', () => {
             showScreen(gameScreen);
         });
@@ -720,17 +886,27 @@
         });
 
         leaveRoomBtn.addEventListener('click', () => {
-            currentRoom = null;
-            playerId = null;
-            showScreen(menuScreen);
-            loadRooms();
+            if (currentRoom) {
+                socket.emit('leave-room', { roomId: currentRoom });
+            } else {
+                // Fallback for direct navigation
+                currentRoom = null;
+                playerId = null;
+                showScreen(menuScreen);
+                loadRooms();
+            }
         });
 
         leaveGameBtn.addEventListener('click', () => {
-            currentRoom = null;
-            playerId = null;
-            showScreen(menuScreen);
-            loadRooms();
+            if (currentRoom) {
+                socket.emit('leave-room', { roomId: currentRoom });
+            } else {
+                // Fallback for direct navigation
+                currentRoom = null;
+                playerId = null;
+                showScreen(menuScreen);
+                loadRooms();
+            }
         });
 
         newRaceBtn.addEventListener('click', () => {

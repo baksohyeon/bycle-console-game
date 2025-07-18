@@ -9,11 +9,13 @@ interface WebPlayer {
   id: string;
   name: string;
   color: string;
-  bicycle: RacingBicycle;
+  bicycle: RacingBicycle | null; // null for spectators
   isConnected: boolean;
   lastSeen: number;
   disconnectedAt?: number;
   reconnectCount: number;
+  isSpectator: boolean;
+  joinedAt: number;
 }
 
 interface GameRoom {
@@ -65,16 +67,29 @@ class WebGameServer {
       const allRooms = Array.from(this.rooms.values());
       const roomList = allRooms
         .filter(room => room.state !== 'empty' && room.state !== 'finished')
-        .map(room => ({
-          id: room.id,
-          playerCount: Array.from(room.players.values()).filter(p => p.isConnected).length,
-          maxPlayers: room.maxPlayers,
-          isStarted: room.isStarted,
-          state: room.state,
-          createdAt: room.createdAt
-        }));
+        .map(room => {
+          const connectedPlayers = Array.from(room.players.values()).filter(p => p.isConnected);
+          const activePlayers = connectedPlayers.filter(p => !p.isSpectator);
+          const spectators = connectedPlayers.filter(p => p.isSpectator);
+          
+          return {
+            id: room.id,
+            playerCount: connectedPlayers.length,
+            activePlayerCount: activePlayers.length,
+            spectatorCount: spectators.length,
+            maxPlayers: room.maxPlayers,
+            isStarted: room.isStarted,
+            state: room.state,
+            createdAt: room.createdAt,
+            ownerName: room.ownerName
+          };
+        });
+      
       console.log(`📋 Rooms API called - Total: ${allRooms.length}, Visible: ${roomList.length}`);
-      console.log(`📋 All rooms:`, allRooms.map(r => `${r.id}(${r.state})`).join(', '));
+      console.log(`📋 Room details:`, roomList.map(r => 
+        `${r.id}(${r.state}, ${r.playerCount} players, owner: ${r.ownerName})`
+      ).join(', '));
+      
       res.json(roomList);
     });
 
@@ -111,13 +126,29 @@ class WebGameServer {
           return;
         }
 
-        if (room.players.size >= room.maxPlayers) {
+        // Check if player is trying to reconnect
+        const existingPlayer = Array.from(room.players.values())
+          .find(p => p.name === playerName && !p.isConnected);
+
+        if (existingPlayer) {
+          // Handle reconnection
+          this.handlePlayerReconnection(socket, room, existingPlayer, roomId);
+          return;
+        }
+
+        // Check if room is full (only count connected players)
+        const connectedPlayers = Array.from(room.players.values()).filter(p => p.isConnected);
+        if (connectedPlayers.length >= room.maxPlayers) {
           socket.emit('error', { message: 'Room is full' });
           return;
         }
 
-        if (room.isStarted) {
-          socket.emit('error', { message: 'Game already started' });
+        // Allow joining active games as spectator if no more player slots
+        const canJoinAsPlayer = !room.isStarted || connectedPlayers.length < room.maxPlayers;
+        
+        if (room.isStarted && !canJoinAsPlayer) {
+          // Join as spectator
+          this.handleSpectatorJoin(socket, room, playerName, playerColor, roomId);
           return;
         }
 
@@ -130,7 +161,9 @@ class WebGameServer {
           bicycle,
           isConnected: true,
           lastSeen: now,
-          reconnectCount: 0
+          reconnectCount: 0,
+          isSpectator: false,
+          joinedAt: now
         };
 
         // Set ownership to first player joining
@@ -147,19 +180,32 @@ class WebGameServer {
         room.game.addPlayer(playerName, playerColor, false);
         socket.join(roomId);
 
-        socket.emit('joined-room', {
+        const joinResponse = {
           playerId: socket.id,
           roomId,
           isOwner: room.ownerId === socket.id,
           ownerName: room.ownerName,
+          isSpectator: false,
+          gameState: room.isStarted ? this.getGameState(room) : null,
+          roomState: room.state,
           players: Array.from(room.players.values()).map(p => ({
             id: p.id,
             name: p.name,
             color: p.color,
             isConnected: p.isConnected,
-            isOwner: p.id === room.ownerId
+            isOwner: p.id === room.ownerId,
+            isSpectator: p.isSpectator,
+            joinedAt: p.joinedAt
           }))
-        });
+        };
+
+        socket.emit('joined-room', joinResponse);
+
+        // If game is active, also send current game state
+        if (room.isStarted) {
+          socket.emit('game-started');
+          socket.emit('game-state-update', this.getGameState(room));
+        }
 
         socket.to(roomId).emit('player-joined', {
           id: socket.id,
@@ -174,7 +220,13 @@ class WebGameServer {
         if (!room || !room.isStarted) return;
 
         const player = room.players.get(socket.id);
-        if (!player) return;
+        if (!player || player.isSpectator || !player.bicycle) {
+          socket.emit('error', { message: 'Spectators cannot perform actions' });
+          return;
+        }
+
+        player.lastSeen = Date.now();
+        room.lastActivity = Date.now();
 
         switch (action) {
           case 'accelerate':
@@ -215,6 +267,11 @@ class WebGameServer {
         console.log(`🏁 Game started in room ${roomId} by owner ${room.ownerName}`);
         this.io.to(roomId).emit('game-started');
         this.startGameLoop(roomId);
+      });
+
+      socket.on('leave-room', ({ roomId }) => {
+        console.log(`Player ${socket.id} requested to leave room ${roomId}`);
+        this.handlePlayerLeave(socket.id, roomId, true); // voluntary leave
       });
 
       socket.on('disconnect', () => {
@@ -275,7 +332,9 @@ class WebGameServer {
       }
 
       room.players.forEach(player => {
-        player.bicycle.move();
+        if (player.bicycle && !player.isSpectator) {
+          player.bicycle.move();
+        }
       });
 
       const gameState = this.getGameState(room);
@@ -310,13 +369,29 @@ class WebGameServer {
   private getGameState(room: GameRoom): any {
     const raceDistance = room.game['raceDistance'] || 100;
 
+    // Only include actual players (not spectators) in the game
+    const activePlayers = Array.from(room.players.values()).filter(p => !p.isSpectator && p.bicycle);
+    
     // Sort players by position for ranking
-    const sortedPlayers = Array.from(room.players.values())
-      .sort((a, b) => b.bicycle.position - a.bicycle.position);
+    const sortedPlayers = activePlayers
+      .sort((a, b) => b.bicycle!.position - a.bicycle!.position);
 
     const players = Array.from(room.players.values()).map((player) => {
+      if (player.isSpectator || !player.bicycle) {
+        // Spectator data
+        return {
+          id: player.id,
+          name: player.name,
+          color: player.color,
+          isSpectator: true,
+          isConnected: player.isConnected,
+          joinedAt: player.joinedAt
+        };
+      }
+
+      // Active player data
       const rank = sortedPlayers.findIndex(p => p.id === player.id) + 1;
-      const distanceFromLeader = sortedPlayers[0] ? sortedPlayers[0].bicycle.position - player.bicycle.position : 0;
+      const distanceFromLeader = sortedPlayers[0] ? sortedPlayers[0].bicycle!.position - player.bicycle.position : 0;
 
       return {
         id: player.id,
@@ -329,17 +404,21 @@ class WebGameServer {
         maxEnergy: player.bicycle.stats.maxEnergy || 100,
         level: player.bicycle.level || 1,
         activePowerUps: player.bicycle.activePowerUps || [],
-        isHuman: true, // All players in rooms are human
-        rank: rank,
-        lastAction: 'coast', // Default action
+        isHuman: true,
+        isSpectator: false,
+        isConnected: player.isConnected,
+        rank: rank || 0,
+        lastAction: 'coast',
         energyTrend: 'stable' as const,
         speedTrend: 'stable' as const,
         positionChange: 0,
-        distanceFromLeader: distanceFromLeader
+        distanceFromLeader: distanceFromLeader,
+        joinedAt: player.joinedAt
       };
     });
 
-    const raceProgress = players.length > 0 ? Math.max(...players.map(p => p.position)) / raceDistance : 0;
+    const activePlayerPositions = players.filter(p => !p.isSpectator).map(p => p.position || 0);
+    const raceProgress = activePlayerPositions.length > 0 ? Math.max(...activePlayerPositions) / raceDistance : 0;
 
     return {
       players,
@@ -362,12 +441,12 @@ class WebGameServer {
       leaderboard: sortedPlayers.slice(0, 3).map((player, i) => ({
         position: i + 1,
         name: player.name,
-        distance: Math.floor(player.bicycle.position),
-        speed: Math.floor(player.bicycle.speed)
+        distance: Math.floor(player.bicycle?.position || 0),
+        speed: Math.floor(player.bicycle?.speed || 0)
       })),
       statistics: {
         totalTurns: room.game['turnCount'] || 0,
-        averageSpeed: players.length > 0 ? players.reduce((sum, p) => sum + p.speed, 0) / players.length : 0,
+        averageSpeed: players.length > 0 ? players.reduce((sum, p) => sum + (p.speed || 0), 0) / players.length : 0,
         weatherChanges: 0,
         powerUpsSpawned: 0,
         totalDistance: raceDistance
@@ -377,7 +456,7 @@ class WebGameServer {
 
   private checkWinner(room: GameRoom): WebPlayer | null {
     for (const player of room.players.values()) {
-      if (player.bicycle.position >= room.game['raceDistance']) {
+      if (player.bicycle && !player.isSpectator && player.bicycle.position >= room.game['raceDistance']) {
         return player;
       }
     }
@@ -386,12 +465,13 @@ class WebGameServer {
 
   private getFinalResults(room: GameRoom): any[] {
     return Array.from(room.players.values())
-      .sort((a, b) => b.bicycle.position - a.bicycle.position)
+      .filter(player => player.bicycle && !player.isSpectator)
+      .sort((a, b) => (b.bicycle?.position || 0) - (a.bicycle?.position || 0))
       .map((player, index) => ({
         position: index + 1,
         name: player.name,
-        finalPosition: player.bicycle.position,
-        stats: player.bicycle.getRaceStats()
+        finalPosition: player.bicycle?.position || 0,
+        stats: player.bicycle?.getRaceStats() || { distance: 0, time: 0, avgSpeed: 0 }
       }));
   }
 
@@ -406,6 +486,114 @@ class WebGameServer {
 
   private generateRoomId(): string {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
+  }
+
+  private handlePlayerReconnection(socket: any, room: GameRoom, existingPlayer: WebPlayer, roomId: string): void {
+    // Update player with new socket ID and reconnect
+    room.players.delete(existingPlayer.id);
+    existingPlayer.id = socket.id;
+    existingPlayer.isConnected = true;
+    existingPlayer.lastSeen = Date.now();
+    existingPlayer.reconnectCount++;
+    delete existingPlayer.disconnectedAt;
+
+    room.players.set(socket.id, existingPlayer);
+    room.lastActivity = Date.now();
+    this.updateRoomState(room);
+
+    socket.join(roomId);
+    
+    const reconnectResponse = {
+      playerId: socket.id,
+      roomId,
+      isOwner: room.ownerId === socket.id,
+      ownerName: room.ownerName,
+      isSpectator: existingPlayer.isSpectator,
+      gameState: room.isStarted ? this.getGameState(room) : null,
+      roomState: room.state,
+      reconnected: true,
+      players: Array.from(room.players.values()).map(p => ({
+        id: p.id,
+        name: p.name,
+        color: p.color,
+        isConnected: p.isConnected,
+        isOwner: p.id === room.ownerId,
+        isSpectator: p.isSpectator,
+        joinedAt: p.joinedAt
+      }))
+    };
+
+    socket.emit('joined-room', reconnectResponse);
+
+    // If game is active, send current state
+    if (room.isStarted) {
+      socket.emit('game-started');
+      socket.emit('game-state-update', this.getGameState(room));
+    }
+
+    socket.to(roomId).emit('player-reconnected', {
+      id: socket.id,
+      name: existingPlayer.name,
+      color: existingPlayer.color,
+      isSpectator: existingPlayer.isSpectator
+    });
+
+    console.log(`🔄 ${existingPlayer.name} reconnected to room ${roomId} (attempt #${existingPlayer.reconnectCount})`);
+  }
+
+  private handleSpectatorJoin(socket: any, room: GameRoom, playerName: string, playerColor: string, roomId: string): void {
+    const now = Date.now();
+    const spectator: WebPlayer = {
+      id: socket.id,
+      name: playerName,
+      color: playerColor,
+      bicycle: null, // Spectators don't have bicycles
+      isConnected: true,
+      lastSeen: now,
+      reconnectCount: 0,
+      isSpectator: true,
+      joinedAt: now
+    };
+
+    room.players.set(socket.id, spectator);
+    room.lastActivity = now;
+    socket.join(roomId);
+
+    const spectatorResponse = {
+      playerId: socket.id,
+      roomId,
+      isOwner: false,
+      ownerName: room.ownerName,
+      isSpectator: true,
+      gameState: room.isStarted ? this.getGameState(room) : null,
+      roomState: room.state,
+      players: Array.from(room.players.values()).map(p => ({
+        id: p.id,
+        name: p.name,
+        color: p.color,
+        isConnected: p.isConnected,
+        isOwner: p.id === room.ownerId,
+        isSpectator: p.isSpectator,
+        joinedAt: p.joinedAt
+      }))
+    };
+
+    socket.emit('joined-room', spectatorResponse);
+
+    // Send current game state to spectator
+    if (room.isStarted) {
+      socket.emit('game-started');
+      socket.emit('game-state-update', this.getGameState(room));
+    }
+
+    socket.to(roomId).emit('player-joined', {
+      id: socket.id,
+      name: playerName,
+      color: playerColor,
+      isSpectator: true
+    });
+
+    console.log(`👀 ${playerName} joined room ${roomId} as spectator`);
   }
 
   private transferRoomOwnership(room: GameRoom, leavingOwnerId: string): void {
@@ -436,16 +624,33 @@ class WebGameServer {
     }
   }
 
-  private handlePlayerDisconnect(socketId: string): void {
-    for (const [roomId, room] of this.rooms) {
+  private handlePlayerLeave(socketId: string, roomId?: string, voluntary: boolean = false): void {
+    const targetRooms = roomId ? [roomId] : Array.from(this.rooms.keys());
+    
+    for (const currentRoomId of targetRooms) {
+      const room = this.rooms.get(currentRoomId);
+      if (!room) continue;
+      
       const player = room.players.get(socketId);
       if (player) {
         const now = Date.now();
         const wasOwner = room.ownerId === socketId;
         
-        player.isConnected = false;
-        player.disconnectedAt = now;
-        player.lastSeen = now;
+        // For voluntary leave, remove player completely
+        // For disconnect, mark as disconnected but keep for reconnection
+        if (voluntary) {
+          room.players.delete(socketId);
+          // Remove from game logic too
+          if (player.bicycle && !player.isSpectator) {
+            // Remove from underlying game if needed
+            console.log(`🚪 ${player.name} voluntarily left room ${currentRoomId}`);
+          }
+        } else {
+          player.isConnected = false;
+          player.disconnectedAt = now;
+          player.lastSeen = now;
+        }
+        
         room.lastActivity = now;
 
         // Handle ownership transfer if owner left
@@ -454,19 +659,20 @@ class WebGameServer {
           
           // If game is active and owner left, notify players about potential consequences
           if (room.isStarted && room.state === 'active') {
-            this.io.to(roomId).emit('owner-left-during-game', {
-              message: `Room owner ${player.name} left during the game. The game will continue with new owner: ${room.ownerName || 'None'}`,
+            this.io.to(currentRoomId).emit('owner-left-during-game', {
+              message: `Room owner ${player.name} ${voluntary ? 'left' : 'disconnected from'} the game. The game will continue with new owner: ${room.ownerName || 'None'}`,
               newOwner: room.ownerName,
               canContinue: room.players.size > 1
             });
             
-            // If no other players, end the game
-            if (Array.from(room.players.values()).filter(p => p.isConnected).length === 0) {
-              console.log(`🏁 Game ended in room ${roomId} - no players remaining`);
+            // If no other connected players, end the game
+            const connectedPlayers = Array.from(room.players.values()).filter(p => p.isConnected);
+            if (connectedPlayers.length === 0) {
+              console.log(`🏁 Game ended in room ${currentRoomId} - no players remaining`);
               room.isStarted = false;
               room.state = 'finished';
               room.endedAt = now;
-              this.io.to(roomId).emit('game-ended', {
+              this.io.to(currentRoomId).emit('game-ended', {
                 reason: 'no-players',
                 message: 'Game ended: all players left'
               });
@@ -474,20 +680,43 @@ class WebGameServer {
           }
         }
 
-        this.io.to(roomId).emit('player-disconnected', {
-          playerId: socketId,
-          playerName: player.name,
-          wasOwner: wasOwner,
-          newOwner: room.ownerName
-        });
+        // Emit different events for voluntary leave vs disconnect
+        if (voluntary) {
+          this.io.to(currentRoomId).emit('player-left', {
+            playerId: socketId,
+            playerName: player.name,
+            wasOwner: wasOwner,
+            newOwner: room.ownerName,
+            voluntary: true
+          });
+          
+          // Notify the leaving player
+          this.io.to(socketId).emit('left-room', {
+            roomId: currentRoomId,
+            message: 'You have left the room'
+          });
+        } else {
+          this.io.to(currentRoomId).emit('player-disconnected', {
+            playerId: socketId,
+            playerName: player.name,
+            wasOwner: wasOwner,
+            newOwner: room.ownerName,
+            voluntary: false
+          });
+        }
 
-        console.log(`Player ${player.name} disconnected from room ${roomId}${wasOwner ? ' (was owner)' : ''}`);
+        console.log(`Player ${player.name} ${voluntary ? 'left' : 'disconnected from'} room ${currentRoomId}${wasOwner ? ' (was owner)' : ''}`);
 
-        // Check if room should be cleaned up
-        this.checkAndCleanupRoom(roomId);
+        // Update room state and check for cleanup
+        this.updateRoomState(room);
+        this.checkAndCleanupRoom(currentRoomId);
         break;
       }
     }
+  }
+
+  private handlePlayerDisconnect(socketId: string): void {
+    this.handlePlayerLeave(socketId, undefined, false);
   }
 
   private updateRoomState(room: GameRoom): void {
