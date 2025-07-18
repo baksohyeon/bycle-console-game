@@ -599,11 +599,20 @@
             playerId = data.playerId;
             roomIdSpan.textContent = data.roomId;
             
+            // Update start button visibility based on ownership
+            startGameBtn.style.display = data.isOwner ? 'inline-block' : 'none';
+            if (!data.isOwner && data.ownerName) {
+                startGameBtn.parentNode.insertBefore(
+                    document.createTextNode(`Only ${data.ownerName} can start the game`),
+                    startGameBtn
+                );
+            }
+            
             playerListUl.innerHTML = '';
             data.players.forEach(player => {
                 const li = document.createElement('li');
                 li.innerHTML = `
-                    <span>${getColorEmoji(player.color)} ${player.name}</span>
+                    <span>${getColorEmoji(player.color)} ${player.name} ${player.isOwner ? '👑' : ''}</span>
                     <span>${player.isConnected ? '🟢 Online' : '🔴 Offline'}</span>
                 `;
                 playerListUl.appendChild(li);
@@ -615,10 +624,55 @@
         socket.on('player-joined', (player) => {
             const li = document.createElement('li');
             li.innerHTML = `
-                <span>${getColorEmoji(player.color)} ${player.name}</span>
+                <span>${getColorEmoji(player.color)} ${player.name} ${player.isOwner ? '👑' : ''}</span>
                 <span>🟢 Online</span>
             `;
             playerListUl.appendChild(li);
+        });
+
+        socket.on('ownership-transferred', (data) => {
+            console.log('👑 Ownership transferred:', data);
+            
+            // Update UI to show new owner
+            const isNewOwner = data.newOwnerId === playerId;
+            startGameBtn.style.display = isNewOwner ? 'inline-block' : 'none';
+            
+            // Show notification
+            const notification = document.createElement('div');
+            notification.className = 'success-message';
+            notification.textContent = `👑 ${data.newOwnerName} is now the room owner`;
+            lobbyScreen.appendChild(notification);
+            setTimeout(() => notification.remove(), 5000);
+            
+            // Update player list
+            playerListUl.querySelectorAll('li').forEach(li => {
+                const playerNameSpan = li.querySelector('span');
+                if (playerNameSpan && playerNameSpan.textContent.includes(data.newOwnerName)) {
+                    playerNameSpan.innerHTML = playerNameSpan.innerHTML.replace(/👑/, '') + ' 👑';
+                }
+            });
+        });
+
+        socket.on('owner-left-during-game', (data) => {
+            console.log('⚠️ Owner left during game:', data);
+            
+            // Show notification in game
+            const notification = document.createElement('div');
+            notification.className = 'error-message';
+            notification.innerHTML = `⚠️ ${data.message}`;
+            gameScreen.appendChild(notification);
+            setTimeout(() => notification.remove(), 8000);
+        });
+
+        socket.on('game-ended', (data) => {
+            console.log('🏁 Game ended:', data);
+            
+            resultsContent.innerHTML = `
+                <h3>🏁 Game Ended</h3>
+                <p>${data.message}</p>
+                <p>Reason: ${data.reason}</p>
+            `;
+            showScreen(resultsScreen);
         });
 
         socket.on('game-started', () => {

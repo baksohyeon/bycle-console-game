@@ -26,6 +26,8 @@ interface GameRoom {
   createdAt: number;
   lastActivity: number;
   endedAt?: number;
+  ownerId: string | null;
+  ownerName: string | null;
 }
 
 class WebGameServer {
@@ -88,7 +90,9 @@ class WebGameServer {
         maxPlayers: 4,
         state: 'waiting',
         createdAt: now,
-        lastActivity: now
+        lastActivity: now,
+        ownerId: null, // Will be set when first player joins
+        ownerName: null
       };
       this.rooms.set(roomId, room);
       console.log(`🏠 Created new room ${roomId} (total rooms: ${this.rooms.size})`);
@@ -129,6 +133,13 @@ class WebGameServer {
           reconnectCount: 0
         };
 
+        // Set ownership to first player joining
+        if (!room.ownerId) {
+          room.ownerId = socket.id;
+          room.ownerName = playerName;
+          console.log(`👑 ${playerName} became owner of room ${roomId}`);
+        }
+
         room.lastActivity = now;
         this.updateRoomState(room);
 
@@ -139,18 +150,22 @@ class WebGameServer {
         socket.emit('joined-room', {
           playerId: socket.id,
           roomId,
+          isOwner: room.ownerId === socket.id,
+          ownerName: room.ownerName,
           players: Array.from(room.players.values()).map(p => ({
             id: p.id,
             name: p.name,
             color: p.color,
-            isConnected: p.isConnected
+            isConnected: p.isConnected,
+            isOwner: p.id === room.ownerId
           }))
         });
 
         socket.to(roomId).emit('player-joined', {
           id: socket.id,
           name: playerName,
-          color: playerColor
+          color: playerColor,
+          isOwner: room.ownerId === socket.id
         });
       });
 
@@ -183,6 +198,12 @@ class WebGameServer {
         const room = this.rooms.get(roomId);
         if (!room || room.isStarted) return;
 
+        // Check if the player is the room owner
+        if (room.ownerId !== socket.id) {
+          socket.emit('error', { message: 'Only the room owner can start the game' });
+          return;
+        }
+
         if (room.players.size < 1) {
           socket.emit('error', { message: 'Need at least 1 player to start' });
           return;
@@ -191,6 +212,7 @@ class WebGameServer {
         room.isStarted = true;
         room.state = 'active';
         room.lastActivity = Date.now();
+        console.log(`🏁 Game started in room ${roomId} by owner ${room.ownerName}`);
         this.io.to(roomId).emit('game-started');
         this.startGameLoop(roomId);
       });
@@ -386,22 +408,80 @@ class WebGameServer {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
   }
 
+  private transferRoomOwnership(room: GameRoom, leavingOwnerId: string): void {
+    // Find the next connected player to become owner
+    const connectedPlayers = Array.from(room.players.values())
+      .filter(p => p.isConnected && p.id !== leavingOwnerId);
+
+    if (connectedPlayers.length > 0) {
+      // Transfer to the oldest connected player (first to join after original owner)
+      const newOwner = connectedPlayers.sort((a, b) => a.lastSeen - b.lastSeen)[0];
+      if (newOwner) {
+        room.ownerId = newOwner.id;
+        room.ownerName = newOwner.name;
+        console.log(`👑 Ownership transferred to ${newOwner.name} in room ${room.id}`);
+        
+        // Notify all players about ownership change
+        this.io.to(room.id).emit('ownership-transferred', {
+          newOwnerId: newOwner.id,
+          newOwnerName: newOwner.name,
+          reason: 'owner-left'
+        });
+      }
+    } else {
+      // No other players, clear ownership
+      room.ownerId = null;
+      room.ownerName = null;
+      console.log(`👑 Room ${room.id} has no owner (empty)`);
+    }
+  }
+
   private handlePlayerDisconnect(socketId: string): void {
     for (const [roomId, room] of this.rooms) {
       const player = room.players.get(socketId);
       if (player) {
         const now = Date.now();
+        const wasOwner = room.ownerId === socketId;
+        
         player.isConnected = false;
         player.disconnectedAt = now;
         player.lastSeen = now;
         room.lastActivity = now;
 
+        // Handle ownership transfer if owner left
+        if (wasOwner) {
+          this.transferRoomOwnership(room, socketId);
+          
+          // If game is active and owner left, notify players about potential consequences
+          if (room.isStarted && room.state === 'active') {
+            this.io.to(roomId).emit('owner-left-during-game', {
+              message: `Room owner ${player.name} left during the game. The game will continue with new owner: ${room.ownerName || 'None'}`,
+              newOwner: room.ownerName,
+              canContinue: room.players.size > 1
+            });
+            
+            // If no other players, end the game
+            if (Array.from(room.players.values()).filter(p => p.isConnected).length === 0) {
+              console.log(`🏁 Game ended in room ${roomId} - no players remaining`);
+              room.isStarted = false;
+              room.state = 'finished';
+              room.endedAt = now;
+              this.io.to(roomId).emit('game-ended', {
+                reason: 'no-players',
+                message: 'Game ended: all players left'
+              });
+            }
+          }
+        }
+
         this.io.to(roomId).emit('player-disconnected', {
           playerId: socketId,
-          playerName: player.name
+          playerName: player.name,
+          wasOwner: wasOwner,
+          newOwner: room.ownerName
         });
 
-        console.log(`Player ${player.name} disconnected from room ${roomId}`);
+        console.log(`Player ${player.name} disconnected from room ${roomId}${wasOwner ? ' (was owner)' : ''}`);
 
         // Check if room should be cleaned up
         this.checkAndCleanupRoom(roomId);
