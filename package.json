@@ -7,6 +7,8 @@
     "build": "tsc",
     "start": "npm run build && node dist/game.js",
     "dev": "ts-node src/game.ts",
+    "server": "ts-node src/server.ts",
+    "web": "npm run build && node dist/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -20,11 +22,14 @@
   "license": "MIT",
   "dependencies": {
     "chalk": "^4.1.2",
-    "readline-sync": "^1.4.10"
+    "readline-sync": "^1.4.10",
+    "express": "^4.18.2",
+    "socket.io": "^4.7.5"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/readline-sync": "^1.4.4",
+    "@types/express": "^4.17.21",
     "ts-node": "^10.9.0",
     "typescript": "^5.0.0"
   }
