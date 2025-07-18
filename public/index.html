@@ -477,6 +477,8 @@
                 const response = await fetch('/api/rooms');
                 const rooms = await response.json();
                 
+                console.log('📋 Loaded rooms:', rooms); // Debug log
+                
                 roomList.innerHTML = '';
                 if (rooms.length === 0) {
                     roomList.innerHTML = '<div style="text-align: center; color: #bbb;">No active rooms</div>';
@@ -489,7 +491,7 @@
                     roomCard.innerHTML = `
                         <div>
                             <strong>Room ${room.id}</strong><br>
-                            <small>${room.playerCount}/${room.maxPlayers} players</small>
+                            <small>${room.playerCount}/${room.maxPlayers} players | State: ${room.state}</small>
                         </div>
                         <button onclick="joinRoom('${room.id}')" ${room.isStarted || room.playerCount >= room.maxPlayers ? 'disabled' : ''}>
                             ${room.isStarted ? '🏁 In Progress' : room.playerCount >= room.maxPlayers ? '🚫 Full' : '🎮 Join'}
@@ -498,6 +500,7 @@
                     roomList.appendChild(roomCard);
                 });
             } catch (error) {
+                console.error('❌ Error loading rooms:', error);
                 showError('Failed to load rooms');
             }
         }

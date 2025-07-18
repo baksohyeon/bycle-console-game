@@ -60,8 +60,9 @@ class WebGameServer {
     });
 
     this.app.get('/api/rooms', (req, res) => {
-      const roomList = Array.from(this.rooms.values())
-        .filter(room => room.state !== 'empty')
+      const allRooms = Array.from(this.rooms.values());
+      const roomList = allRooms
+        .filter(room => room.state !== 'empty' && room.state !== 'finished')
         .map(room => ({
           id: room.id,
           playerCount: Array.from(room.players.values()).filter(p => p.isConnected).length,
@@ -70,6 +71,8 @@ class WebGameServer {
           state: room.state,
           createdAt: room.createdAt
         }));
+      console.log(`📋 Rooms API called - Total: ${allRooms.length}, Visible: ${roomList.length}`);
+      console.log(`📋 All rooms:`, allRooms.map(r => `${r.id}(${r.state})`).join(', '));
       res.json(roomList);
     });
 
@@ -88,6 +91,7 @@ class WebGameServer {
         lastActivity: now
       };
       this.rooms.set(roomId, room);
+      console.log(`🏠 Created new room ${roomId} (total rooms: ${this.rooms.size})`);
       res.json({ roomId });
     });
   }
@@ -411,8 +415,12 @@ class WebGameServer {
 
     if (connectedPlayers.length === 0) {
       if (room.state !== 'finished') {
-        room.state = 'empty';
-        console.log(`Room ${room.id} is now empty`);
+        // Only mark as empty if the room has had players before
+        if (room.players.size > 0) {
+          room.state = 'empty';
+          console.log(`Room ${room.id} is now empty`);
+        }
+        // New rooms with no players yet stay in 'waiting' state
       }
     } else if (room.state === 'empty') {
       room.state = room.isStarted ? 'active' : 'waiting';
